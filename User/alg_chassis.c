@@ -300,7 +300,15 @@ static Chassis_Status Chassis_Jiesuan(Chassis_Controller *chassis)
         wheel = &Chassis_Wheels[index];
 
         vx_at_wheel = chassis->requested_body.vx_mps + (-chassis->requested_body.wz_radps * wheel->y_m); // 前后平移速度加轮心旋转速度在前后方向上的分量(是负的因为逆时针为正)
-        vy_at_wheel = chassis->requested_body.vy_mps + (-chassis->requested_body.wz_radps * wheel->x_m);
+        /*
+         * 平面刚体绕底盘中心逆时针旋转时，轮心速度为：
+         *     vx_wheel = vx - wz * y
+         *     vy_wheel = vy + wz * x
+         *
+         * 这里必须是“+ wz * x”。若写成减号，纯旋转工况下的
+         * 四轮目标将与 Chassis_ForwardKinematics() 的正解不互逆。
+         */
+        vy_at_wheel = chassis->requested_body.vy_mps + chassis->requested_body.wz_radps * wheel->x_m;
 
         wheel_speed = (wheel->tx * vx_at_wheel + wheel->ty * vy_at_wheel) / CHASSIS_WHEEL_RADIUS_M;
 

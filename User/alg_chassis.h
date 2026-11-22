@@ -145,7 +145,7 @@ typedef struct
 typedef struct
 {
     float vx_mps;   // X 方向平移速度，m/s
-    float vy_mps;   // Y 方向平移速度，m/
+    float vy_mps;   // Y 方向平移速度，m/s
     float wz_radps; // 逆时针旋转角速度，rad/s
 
 } Chassis_Velocity;
@@ -176,7 +176,7 @@ typedef struct
 typedef struct
 {
     bool init;         // 用来记录底盘对象是否已经初始化成功
-    bool has_command;  // 用来记录底盘对象是否已经初始化成功
+    bool has_command;  // 是否保存有一条尚未超时的运动指令
     bool output_valid; // 当前轮速目标是否允许交给电机执行
 
     Chassis_Mode mode;
@@ -200,5 +200,81 @@ typedef struct
 
     Chassis_Status last_status; // 最近一次操作结果
 } Chassis_Controller;
+
+//-----------公共函数声明----------------
+
+/**
+ * @brief 初始化底盘解算对象
+ *
+ * @param chassis 底盘对象
+ * @return Chassis_Status 初始化结果
+ *
+ * @note 初始化完成后底盘处于 CHASSIS_MODE_STOP，轮速输出无效且为零。
+ */
+Chassis_Status Chassis_Init(Chassis_Controller *chassis);
+
+/**
+ * @brief 设置底盘运行模式
+ *
+ * @param chassis 底盘对象
+ * @param mode 新的运行模式
+ * @return Chassis_Status 设置结果
+ *
+ * @note 模式发生变化时会撤销旧指令并清零已有轮速目标，调用方需要
+ *       重新调用 Chassis_SetCommand() 提交当前周期的运动指令。
+ */
+Chassis_Status Chassis_SetMode(Chassis_Controller *chassis, Chassis_Mode mode);
+
+/**
+ * @brief 设置小陀螺模式使用的旋转角速度
+ *
+ * @param chassis 底盘对象
+ * @param spin_radps 小陀螺旋转角速度，单位 rad/s，逆时针为正
+ * @return Chassis_Status 设置结果
+ *
+ * @note 输入会被限制在正负 CHASSIS_MAX_YAW_RATE_RADPS 范围内。
+ */
+Chassis_Status Chassis_SetSpinRate(Chassis_Controller *chassis, float spin_radps);
+
+/**
+ * @brief 提交一条完整运动指令并刷新指令时间戳
+ *
+ * @param chassis 底盘对象
+ * @param command 运动指令；函数会复制其内容，调用结束后不保存该指针
+ * @param now_ms 当前系统毫秒时间，通常传入 HAL_GetTick()
+ * @return Chassis_Status 提交结果
+ *
+ * @note 本函数只保存和校验指令，不直接计算轮速。提交成功后仍需在
+ *       控制周期中调用 Chassis_Update()。
+ */
+Chassis_Status Chassis_SetCommand(Chassis_Controller *chassis,
+                                  const Chassis_Command *command,
+                                  uint32_t now_ms);
+
+/**
+ * @brief 周期执行坐标变换、速度限制和四轮逆运动学解算
+ *
+ * @param chassis 底盘对象
+ * @param now_ms 当前系统毫秒时间，通常传入 HAL_GetTick()
+ * @return Chassis_Status 本周期处理结果
+ *
+ * @note 只有返回 CHASSIS_STATUS_OK 且 chassis->output_valid 为 true 时，
+ *       wheel_target_radps[] 才能作为电机速度环目标使用。
+ */
+Chassis_Status Chassis_Update(Chassis_Controller *chassis, uint32_t now_ms);
+
+/**
+ * @brief 根据四轮输出轴角速度反馈估算底盘速度
+ *
+ * @param wheel_feedback_radps 四轮角速度数组，单位 rad/s，顺序必须为
+ *        FL、FR、RL、RR，并与 Chassis_Wheel_Index 一致
+ * @param body_velocity 输出的底盘速度估计值
+ * @return Chassis_Status 计算结果
+ *
+ * @note 传入的必须是轮子输出轴角速度，而不是 M3508 电机转子轴速度。
+ */
+Chassis_Status Chassis_ForwardKinematics(
+    const float wheel_feedback_radps[CHASSIS_WHEEL_COUNT],
+    Chassis_Velocity *body_velocity);
 
 #endif
