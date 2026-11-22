@@ -1,5 +1,7 @@
 #include "drv_uart.h"
 #include "usart.h"
+#include <stdbool.h>
+#include <stddef.h>
 
 //-----------变量-----------------------------
 
@@ -30,7 +32,37 @@ static Struct_UART_Manage_Obj *UART_Manage_Objects[] =
         &UART5_Manage_Object,
         &UART6_Manage_Object};
 
-#define UART_Manage_Objects_Size 6
+#define UART_Manage_Objects_Size (sizeof(UART_Manage_Objects) / sizeof(UART_Manage_Objects[0]))
+
+/* H723 AXI SRAM：0x24000000～0x2404FFFF，DMA1/2 可访问。
+ * 明确拒绝 DTCM 缓冲，避免 HAL 返回成功但 DMA 实际无法读写。
+ * 当前链接配置把应用数据和堆栈都放在此区。
+ */
+static bool UART_IsDMABufferValid(const uint8_t *data, uint16_t size)
+{
+    uintptr_t address = (uintptr_t)data;
+    return data != NULL && size != 0U &&
+           address >= 0x24000000UL && address < 0x24050000UL &&
+           (uintptr_t)size <= 0x24050000UL - address &&
+           (SCB->CCR & SCB_CCR_DC_Msk) == 0U;
+}
+
+/* 每次重启接收都关闭 HT；Normal 模式仅处理 IDLE 和 TC。
+ * UART 与 RX DMA 中断当前优先级相同，不会互相抢占。
+ */
+static HAL_StatusTypeDef UART_StartReceive(Struct_UART_Manage_Obj *obj)
+{
+    HAL_StatusTypeDef status;
+    status = HAL_UARTEx_ReceiveToIdle_DMA(obj->uart_handle,
+                                         obj->uart_rx_buffer,
+                                         obj->uart_rx_size);
+    if (status == HAL_OK)
+    {
+        __HAL_DMA_DISABLE_IT(obj->uart_handle->hdmarx, DMA_IT_HT);
+    }
+    obj->last_rx_status = status;
+    return status;
+}
 
 //-----------函数-----------------------------
 
@@ -62,6 +94,10 @@ static Struct_UART_Manage_Obj *UART_Get_Object_By_Instance(USART_TypeDef *Instan
  */
 static Struct_UART_Manage_Obj *UART_Get_Obj_by_Handle(UART_HandleTypeDef *huart)
 {
+    if (huart == NULL)
+    {
+        return NULL;
+    }
     for (uint8_t i = 0; i < UART_Manage_Objects_Size; i++)
     {
         if (UART_Manage_Objects[i]->uart_handle == huart)
@@ -80,19 +116,41 @@ static Struct_UART_Manage_Obj *UART_Get_Obj_by_Handle(UART_HandleTypeDef *huart)
  * @retval
  */
 
-void UART_Init(UART_HandleTypeDef *huart, uint8_t *uart_rx_buffer, uint16_t uart_rx_size, UART_Callback uart_call_back)
+HAL_StatusTypeDef UART_Set_Error_Callback(UART_HandleTypeDef *huart,
+                                         UART_Error_Callback callback)
 {
-    Struct_UART_Manage_Obj *obj = UART_Get_Object_By_Instance(huart->Instance);
+    Struct_UART_Manage_Obj *obj;
+    if (huart == NULL) return HAL_ERROR;
+    obj = UART_Get_Object_By_Instance(huart->Instance);
+    if (obj == NULL) return HAL_ERROR;
+    obj->error_callback = callback;
+    return HAL_OK;
+}
+
+HAL_StatusTypeDef UART_Init(UART_HandleTypeDef *huart, uint8_t *uart_rx_buffer, uint16_t uart_rx_size, UART_Callback uart_call_back)
+{
+    Struct_UART_Manage_Obj *obj;
+    if (huart == NULL || huart->hdmarx == NULL ||
+        huart->hdmarx->Init.Mode != DMA_NORMAL ||
+        !UART_IsDMABufferValid(uart_rx_buffer, uart_rx_size))
+    {
+        return HAL_ERROR;
+    }
+    obj = UART_Get_Object_By_Instance(huart->Instance);
     if (obj == NULL) // 如果查找管理对象失败
     {
-        return; // 退出函数
+        return HAL_ERROR;
+    }
+    if (huart->RxState != HAL_UART_STATE_READY)
+    {
+        return HAL_BUSY;
     }
     obj->uart_handle = huart;
     obj->uart_rx_buffer = uart_rx_buffer;
     obj->uart_rx_size = uart_rx_size;
     obj->callback_function = uart_call_back;
 
-    HAL_UARTEx_ReceiveToIdle_DMA(huart, uart_rx_buffer, uart_rx_size); // 开启DMA接收
+    return UART_StartReceive(obj);
 }
 
 /**
@@ -105,7 +163,9 @@ void UART_Init(UART_HandleTypeDef *huart, uint8_t *uart_rx_buffer, uint16_t uart
 
 uint8_t UART_Send(UART_HandleTypeDef *huart, uint8_t *pData, uint16_t Size)
 {
-    if (huart == NULL || pData == NULL || Size == 0) // 检查参数是否合法
+    if (huart == NULL || huart->hdmatx == NULL ||
+        huart->hdmatx->Init.Mode != DMA_NORMAL ||
+        !UART_IsDMABufferValid(pData, Size))
     {
         return HAL_ERROR; // 结束当前函数，并向上层返回一个状态值 HAL_ERROR，表示这次操作失败或参数不合法
     }
@@ -120,7 +180,10 @@ uint8_t UART_Send(UART_HandleTypeDef *huart, uint8_t *pData, uint16_t Size)
  */
 void TIM_UART_PeriodElapsedCallback(uint16_t Size)
 {
-    UART_Send(&huart1, UART1_Tx_Data, Size);
+    if (Size <= sizeof(UART1_Tx_Data))
+    {
+        UART_Send(&huart1, UART1_Tx_Data, Size);
+    }
 }
 
 /**
@@ -136,12 +199,19 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
     {
         return; // 退出函数
     }
-    if (obj->callback_function != NULL)
+    /* 防御性忽略 HT，不能解析前半段后又重复解析整个缓冲。 */
+    if (HAL_UARTEx_GetRxEventType(huart) == HAL_UART_RXEVENT_HT)
+    {
+        return;
+    }
+    if (Size > 0U && Size <= obj->uart_rx_size &&
+        obj->callback_function != NULL)
     {
         obj->callback_function(obj->uart_rx_buffer, Size);
     }
 
-    HAL_UARTEx_ReceiveToIdle_DMA(obj->uart_handle, obj->uart_rx_buffer, obj->uart_rx_size); // 重新开启接收
+    /* 回调运行在 IRQ，不能阻塞；缓冲只保证在本次回调内稳定。 */
+    UART_StartReceive(obj);
 }
 
 /**
@@ -152,8 +222,12 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
     Struct_UART_Manage_Obj *obj = UART_Get_Obj_by_Handle(huart);
-    if (obj != NULL)
+    if (obj != NULL && obj->error_callback != NULL)
     {
-        HAL_UARTEx_ReceiveToIdle_DMA(obj->uart_handle, obj->uart_rx_buffer, obj->uart_rx_size);
+        obj->error_callback(huart->ErrorCode);
+    }
+    if (obj != NULL && huart->RxState == HAL_UART_STATE_READY)
+    {
+        UART_StartReceive(obj);
     }
 }

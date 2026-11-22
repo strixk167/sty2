@@ -1,0 +1,18 @@
+; STM32H723VGT6: application RAM in DMA1/2-accessible 320 KiB AXI SRAM.
+; Keep this scatter file selected after regenerating the CubeMX project.
+; DTCM (0x20000000) is intentionally not used for default data/stack:
+; caller-provided UART DMA buffers must also be reachable by DMA1/2.
+LR_IROM1 0x08000000 0x00100000
+{
+  ER_IROM1 0x08000000 0x00100000
+  {
+    *.o (RESET, +First)
+    *(InRoot$$Sections)
+    .ANY (+RO)
+    .ANY (+XO)
+  }
+  RW_AXI 0x24000000 0x00050000
+  {
+    .ANY (+RW +ZI)
+  }
+}

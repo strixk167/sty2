@@ -3,6 +3,7 @@
 
 #include "stm32h7xx_hal.h"
 #include <stdint.h>
+#include <stdbool.h>
 
 //-----------宏定义-------------------------
 // 串口绘图单条指令最大长度
@@ -45,6 +46,10 @@ typedef struct
   uint8_t Data_Num;                    // 当前发送的数据数量
   volatile int8_t Variable_Index;      // 接收指令字典索引，-1表示未找到
   volatile double Variable_Value;      // 接收到的变量值
+  /* UART IDLE/DMA 分块不等于命令边界，跨回调累积到 '#' 再解析。 */
+  char Rx_Command[SERIALPLOT_MAX_LEN];
+  uint16_t Rx_Command_Length;
+  bool Rx_Discarding; /* 超长命令丢弃到下一个 '#'，避免截断后误执行。 */
 } Struct_Serialplot_Manage_Obj;
 
 //-----------函数声明------------------------
@@ -76,6 +81,13 @@ int8_t Serialplot_Get_Variable_Index(Struct_Serialplot_Manage_Obj *obj);
  */
 
 double Serialplot_Get_Variable_Value(Struct_Serialplot_Manage_Obj *obj);
+
+/* 原有两个 Getter 保留。新代码推荐本接口：原子读取索引和值并消费一次。
+ * 当前仍为“最近一条命令”邮箱，不是队列；多条未消费命令只保留最后一条。
+ * 取到命令后，在控制周期边界校验并应用 PID 配置，不在接收 IRQ 内改 PID。
+ */
+bool Serialplot_Take_Variable(Struct_Serialplot_Manage_Obj *obj,
+                              int8_t *index, double *value);
 
 /**
  * @brief  添加被发送的数据

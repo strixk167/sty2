@@ -9,7 +9,7 @@ static CAN_BusState can3_state;
 //------------宏定义-------------------------
 
 #define CAN_STD_FILTER_INDEX 0U // 按照CubeMX的StdFilter=1设定，使用第一个标准器槽位
-#define CAN_STD_ID_MAX 0x77U    // CAN标准帧ID的最大值,用于校验
+#define CAN_STD_ID_MAX 0x7FFU   // CAN标准帧ID的最大值,用于校验
 
 #define CAN_HAL_RX_SCRATCH_BYTES 64U // 本地草稿区，先复制数据再返回给调用方检查。这个零食数字组覆盖DLC表的最大长度，避免超长报文
 

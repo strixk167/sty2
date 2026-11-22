@@ -1,1 +1,0 @@
-Running. PID=14996. Shortcut=Ctrl+Alt+T / Ctrl+Alt+Shift+T

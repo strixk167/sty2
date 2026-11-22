@@ -40,14 +40,6 @@ typedef struct
 //-----------函数声明-------------
 
 /**
- * @brief 通过句柄地址匹配相应总线状态对象
- *
- * @param hfdcan 句柄
- * @return CAN_BusState* 总线状态对象的地址
- */
-static CAN_BusState *CAN_FindBus(const FDCAN_HandleTypeDef *hfdcan);
-
-/**
  * @brief 配置标准ID接收规则、保存应用回调、启动FDCAN和开启接收中断通知的函数
  *
  * @param hfdcan FDCAN句柄

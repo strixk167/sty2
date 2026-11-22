@@ -4,6 +4,9 @@
 #include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
+#include <errno.h>
+#include <ctype.h>
 
 //-----------内部函数---------------------
 /**
@@ -64,6 +67,8 @@ void Serialplot_Init(Struct_Serialplot_Manage_Obj *obj, UART_HandleTypeDef *huar
     obj->Data_Num = 0;
     obj->Variable_Index = -1;
     obj->Variable_Value = 0;
+    obj->Rx_Command_Length = 0U;
+    obj->Rx_Discarding = false;
 
     for (uint8_t i = 0; i < SERIALPLOT_MAX_CH; i++)
     {
@@ -106,6 +111,28 @@ double Serialplot_Get_Variable_Value(Struct_Serialplot_Manage_Obj *obj)
     }
 
     return obj->Variable_Value;
+}
+
+bool Serialplot_Take_Variable(Struct_Serialplot_Manage_Obj *obj,
+                              int8_t *index, double *value)
+{
+    uint32_t primask;
+    bool available;
+    if (obj == NULL || index == NULL || value == NULL)
+    {
+        return false;
+    }
+    primask = __get_PRIMASK();
+    __disable_irq();
+    available = obj->Variable_Index >= 0;
+    if (available)
+    {
+        *index = obj->Variable_Index;
+        *value = obj->Variable_Value;
+        obj->Variable_Index = -1;
+    }
+    __set_PRIMASK(primask);
+    return available;
 }
 
 /**
@@ -155,6 +182,11 @@ uint16_t Serialplot_Output(Struct_Serialplot_Manage_Obj *obj)
     }
 
     uint8_t type_size = Serialplot_Get_Data_Type_Size(obj->Data_Type);
+    if (type_size == 0U || obj->Data_Num > SERIALPLOT_MAX_CH ||
+        (obj->huart != NULL && obj->huart->gState != HAL_UART_STATE_READY))
+    {
+        return 0;
+    }
     uint16_t len = 1 + obj->Data_Num * type_size;
 
     if (len > obj->UART_Tx_Buffer_Size)
@@ -212,75 +244,88 @@ void Serialplot_TIM_PeriodElapsedCallback(Struct_Serialplot_Manage_Obj *obj)
  * @param Rx_Data 接收数据
  * @param Length 接收长度
  */
-void Serialplot_UART_Rx_CpltCallback(Struct_Serialplot_Manage_Obj *obj, uint8_t *Rx_Data, uint16_t Length)
+/* 只解析一条完整命令；所有检查通过后才发布索引和值。 */
+static void Serialplot_Parse_Command(Struct_Serialplot_Manage_Obj *obj)
 {
-    if (obj == NULL || Rx_Data == NULL || Length == 0) // 任意一个成立
+    char *separator = strchr(obj->Rx_Command, '=');
+    char *end;
+    double value;
+    uint32_t primask;
+    uint16_t index;
+
+    if (separator == NULL || separator == obj->Rx_Command ||
+        obj->UART_Rx_Variable_List == NULL)
     {
         return;
     }
-
-    // 查找“ = ”，也就是说到eq_pos之前是变量名
-    uint16_t eq_pos = 0;
-    while (eq_pos < Length && Rx_Data[eq_pos] != '=')
-    {
-        eq_pos++;
-    }
-
-    if (eq_pos >= Length)
+    *separator = '\0';
+    errno = 0;
+    value = strtod(separator + 1, &end);
+    if (end == separator + 1 || errno == ERANGE || !isfinite(value))
     {
         return;
     }
-
-    // 查找“ # ”，也就是说查找整条指令的结束位置
-    uint16_t end_pos = eq_pos + 1;
-    while (end_pos < Length && Rx_Data[end_pos] != '#')
+    while (isspace((unsigned char)*end))
     {
-        end_pos++;
+        ++end;
     }
-
-    if (end_pos >= Length)
+    if (*end != '\0')
     {
         return;
     }
-
-    if (eq_pos >= SERIALPLOT_MAX_LEN)
+    for (index = 0U; index < obj->UART_Rx_Variable_Num && index <= INT8_MAX; ++index)
     {
-        return;
-    }
-
-    // 提取变量名
-    char tmp_variable_name[SERIALPLOT_MAX_LEN];
-    memcpy(tmp_variable_name, Rx_Data, eq_pos);
-    tmp_variable_name[eq_pos] = '\0'; // 给字符串手动加上结束符
-
-    // 在字典中查找
-    obj->Variable_Index = -1;
-
-    for (uint8_t i = 0; i < obj->UART_Rx_Variable_Num; i++)
-    {
-        if (obj->UART_Rx_Variable_List != NULL && strcmp(tmp_variable_name, obj->UART_Rx_Variable_List[i]) == 0)
+        if (obj->UART_Rx_Variable_List[index] != NULL &&
+            strcmp(obj->Rx_Command, obj->UART_Rx_Variable_List[index]) == 0)
         {
-            obj->Variable_Index = i;
-            break;
+            /* double 在 M7 上不能假定读写原子，和 Take 配对保护。 */
+            primask = __get_PRIMASK();
+            __disable_irq();
+            obj->Variable_Value = value;
+            obj->Variable_Index = (int8_t)index;
+            __set_PRIMASK(primask);
+            return;
         }
     }
+}
 
-    if (obj->Variable_Index == -1)
+void Serialplot_UART_Rx_CpltCallback(Struct_Serialplot_Manage_Obj *obj,
+                                     uint8_t *Rx_Data, uint16_t Length)
+{
+    uint16_t index;
+    if (obj == NULL || Rx_Data == NULL)
     {
         return;
     }
-
-    // 提取数值字符串
-    uint16_t value_len = end_pos - eq_pos - 1; // 计算数值长度
-
-    char tmp_value[32];
-    if (value_len >= sizeof(tmp_value))
+    for (index = 0U; index < Length; ++index)
     {
-        value_len = sizeof(tmp_value) - 1; // 最后一个字节存\0
+        uint8_t byte = Rx_Data[index];
+        if (byte == '#')
+        {
+            if (!obj->Rx_Discarding && obj->Rx_Command_Length != 0U)
+            {
+                obj->Rx_Command[obj->Rx_Command_Length] = '\0';
+                Serialplot_Parse_Command(obj);
+            }
+            obj->Rx_Command_Length = 0U;
+            obj->Rx_Discarding = false;
+        }
+        else if (!obj->Rx_Discarding)
+        {
+            /* 容许电脑端在两条命令之间发送换行。 */
+            if (obj->Rx_Command_Length == 0U &&
+                (byte == '\r' || byte == '\n'))
+            {
+                continue;
+            }
+            if (byte == 0U ||
+                obj->Rx_Command_Length >= sizeof(obj->Rx_Command) - 1U)
+            {
+                obj->Rx_Command_Length = 0U;
+                obj->Rx_Discarding = true;
+                continue;
+            }
+            obj->Rx_Command[obj->Rx_Command_Length++] = (char)byte;
+        }
     }
-
-    memcpy(tmp_value, &Rx_Data[eq_pos + 1], value_len); // 从Rx_Data把数据放入tmp_value
-    tmp_value[value_len] = '\0';
-
-    obj->Variable_Value = strtod(tmp_value, NULL); // 把类型转换为double类型
 }

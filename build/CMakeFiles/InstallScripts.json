@@ -1,0 +1,18 @@
+{
+	"InstallScripts" : 
+	[
+		"E:/1.2.rmprojects/2.S/sty2/build/cmake_install.cmake",
+		"E:/1.2.rmprojects/2.S/sty2/build/Source/cmake_install.cmake",
+		"E:/1.2.rmprojects/2.S/sty2/build/Source/BasicMathFunctions/cmake_install.cmake",
+		"E:/1.2.rmprojects/2.S/sty2/build/Source/ConcatenationFunctions/cmake_install.cmake",
+		"E:/1.2.rmprojects/2.S/sty2/build/Source/FullyConnectedFunctions/cmake_install.cmake",
+		"E:/1.2.rmprojects/2.S/sty2/build/Source/ConvolutionFunctions/cmake_install.cmake",
+		"E:/1.2.rmprojects/2.S/sty2/build/Source/ActivationFunctions/cmake_install.cmake",
+		"E:/1.2.rmprojects/2.S/sty2/build/Source/PoolingFunctions/cmake_install.cmake",
+		"E:/1.2.rmprojects/2.S/sty2/build/Source/SoftmaxFunctions/cmake_install.cmake",
+		"E:/1.2.rmprojects/2.S/sty2/build/Source/SVDFunctions/cmake_install.cmake",
+		"E:/1.2.rmprojects/2.S/sty2/build/Source/ReshapeFunctions/cmake_install.cmake",
+		"E:/1.2.rmprojects/2.S/sty2/build/Source/NNSupportFunctions/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

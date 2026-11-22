@@ -2,6 +2,7 @@
 #define __ALG_PID_H__
 
 //-----------Includes--------------
+#include <stdbool.h>
 #include "drv_math.h"
 
 //-----------宏定义-----------------------
@@ -94,7 +95,7 @@ typedef struct
     float I_Stop_Error;     // 误差达到时积分停止累计的值
 
     // 积分分离
-    float I_Sep_Error;
+    float I_Sep_Error; // 积分分离阈值
     PID_I_Separation_Mode I_Sep_Mode;
 
     // 微分先行选项开关
@@ -107,12 +108,12 @@ typedef struct
     PID_D_Mode D_Mode;
 
     // 前馈输出
-    float feedforward_gain;   // 按目标速度提供基础命令，目标稳定后可以持续输出
-    float fetpoint_rate_gain; // 按目标加速度提供加速、减速补偿，目标稳定后不输出
+    float feedforward_gain; // 按目标速度提供基础命令，目标稳定后可以持续输出
+    float target_rate_gain; // 按目标加速度提供加速、减速补偿，目标稳定后不输出
 
     // 低通滤波参数，单位秒
     float measurement_filter_tau; // 滤反馈测量值，单位秒
-    float derivative_filter_tau;  // 滤微分变化率，单位秒
+    float d_filter_tau;           // 滤微分变化率，单位秒
     float feedforward_filter_tau; // 滤前馈输出，单位秒
     float output_filter_tau;      // 滤限幅后总输出，单位秒
 
@@ -131,11 +132,11 @@ typedef struct
 
     float filtered_measurement; // 滤波后的反馈值
     float pre_error;            // 上一周期误差
-    float pre_setpoint;         // 上一周期目标设定值
+    float pre_target;           // 上一周期目标设定值
 
-    float intergral_out; // 积分项输出，已经乘过i
+    float i_out; // 积分项输出，已经乘过i
 
-    float filtered_derivative;  // 滤波后的积分项
+    float filtered_d;           // 滤波后的积分项
     float filtered_feedforward; // 滤波后的前馈量
     float last_out;             // 上一周期PID总输出
 
@@ -146,6 +147,10 @@ typedef struct
     float ff_out; // 前馈项输出FF
 } PID_State;
 
+/**
+ * @brief PID管理结构体
+ *
+ */
 typedef struct
 {
     PID_Config pid_config;
@@ -154,165 +159,24 @@ typedef struct
 } PID_Controller;
 
 //-----------函数声明---------------------
-/**
- * @brief   PID 初始化
- * @param   pid  PID 对象
- * @param   Kp  P 参数
- * @param   Ki  I 参数
- * @param   Kd  D 参数
- * @param   Delta_Time  PID计时周期，单位 s
- * @retval  None
- */
-void PID_Init(Struct_PID *pid, float Kp, float Ki, float Kd, float Delta_Time);
 
 /**
- * @brief   获取积分值
- * @param   pid PID对象
- * @retval  float 积分值，误差对时间的积分
+ * @brief 校验并复制配置，清空动态状态。
+ * @return PID_STATUS_OK 表示初始化成功。
  */
-float PID_Get_Integral_Error(Struct_PID *pid);
+PID_Status PID_Init(PID_Controller *pid, const PID_Config *config);
 
 /**
- * @brief   获取输出值
- * @param   pid PID 对象
- * @retval  float 输出值
+ * @brief 清空积分、差分和滤波历史，保留配置。
  */
-float PID_Get_Out(Struct_PID *pid);
+void PID_Reset(PID_Controller *pid);
 
 /**
- * @brief   设置 PID 的 P
- * @param   pid PID 对象
- * @param   Kp P 参数
- * @retval  None
+ * @brief 使用本周期目标、反馈和时间间隔计算输出。
+ * @param output 指向控制器对象之外的有效输出变量。
+ * @return PID状态码，计算失败时有效的output写入零。
  */
-void PID_Set_Kp(Struct_PID *pid, float Kp);
-
-/**
- * @brief   设置 PID 的 I
- * @param   pid PID 对象
- * @param   Ki I 参数
- * @retval  None
- */
-void PID_Set_Ki(Struct_PID *pid, float Ki);
-
-/**
- * @brief   设置 PID 的 D
- * @param   pid PID 对象
- * @param   Kd D 参数
- * @retval  None
- */
-void PID_Set_Kd(Struct_PID *pid, float Kd);
-
-/**
- * @brief   设置前馈
- * @param   pid PID 对象
- * @param   K_F 前馈参数
- * @retval  None
- */
-void PID_Set_K_F(Struct_PID *pid, float K_F);
-
-/**
- * @brief   获取前馈参数
- * @param   pid PID 对象
- * @retval  float 前馈参数
- */
-float PID_Get_K_F(Struct_PID *pid);
-
-/**
- * @brief   设置前馈低通滤波系数
- * @param   pid PID 对象
- * @param   F_Filter 滤波系数，0~1。0 为不滤波，越大滤波越弱
- * @retval  None
- */
-void PID_Set_F_Filter(Struct_PID *pid, float F_Filter);
-
-/**
- * @brief   设置积分限幅，0 为不限制
- * @param   pid PID 对象
- * @param   I_Out_Max 积分限幅
- * @retval  None
- */
-void PID_Set_I_Out_Max(Struct_PID *pid, float I_Out_Max);
-
-/**
- * @brief   设置输出限幅，0 为不限制
- * @param   pid PID 对象
- * @param   Out_Max 输出限幅
- * @retval  None
- */
-void PID_Set_Out_Max(Struct_PID *pid, float Out_Max);
-
-/**
- * @brief   设置变速积分定速内段阈值，0 为不限制
- * @param   pid PID 对象
- * @param   I_Variable_Speed_A 定速内段阈值
- * @retval  None
- */
-void PID_Set_I_Variable_Speed_A(Struct_PID *pid, float I_Variable_Speed_A);
-
-/**
- * @brief   设置变速积分变速区间，0 为不限制
- * @param   pid PID 对象
- * @param   I_Variable_Speed_B 变速区间
- * @retval  None
- */
-void PID_Set_I_Variable_Speed_B(Struct_PID *pid, float I_Variable_Speed_B);
-
-/**
- * @brief   设置积分分离阈值，需为正数，0 为不限制
- * @param   pid PID 对象
- * @param   I_Separate_Threshold 积分分离阈值
- * @retval  None
- */
-void PID_Set_I_Separate_Threshold(Struct_PID *pid, float I_Separate_Threshold);
-
-/**
- * @brief   设置微分先行选项
- * @param   pid PID 对象
- * @param   D_First 微分先行选项
- * @retval  None
- */
-void PID_Set_D_First(Struct_PID *pid, Enum_PID_D_First D_First);
-
-/**
- * @brief   设置死区
- * @param   pid PID 对象
- * @param   Dead_Zone 死区大小
- * @retval  None
- */
-void PID_Set_Dead_Zone(Struct_PID *pid, float Dead_Zone);
-
-/**
- * @brief   设置目标值
- * @param   pid PID 对象
- * @param   Target 目标值
- * @retval  None
- */
-void PID_Set_Target(Struct_PID *pid, float Target);
-
-/**
- * @brief   设置当前值
- * @param   pid PID 对象
- * @param   Now 当前值
- * @retval  None
- */
-void PID_Set_Now(Struct_PID *pid, float Now);
-
-/**
- * @brief   设置积分值，一般用于积分清零
- * @param   pid PID 对象
- * @param   Integral_Error 积分值
- * @retval  None
- */
-void PID_Set_Integral_Error(Struct_PID *pid, float Integral_Error);
-
-/**
- * @brief   PID 周期调整回调
- * @param   pid PID 对象
- * @retval  无
- * @note    用于计算PID
- * @note    需在固定周期中断或主循环中周期性调用
- */
-void PID_TIM_Adjust_PeriodElapsedCallback(Struct_PID *pid);
+PID_Status PID_Update(PID_Controller *pid, float target, float measurement,
+                      float dt, float *output);
 
 #endif // __ALG_PID_H__
